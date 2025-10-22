@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 from uuid import uuid4
@@ -82,7 +83,7 @@ def build_prediction_records(
     band_pct: float,
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     for idx, (row, fair_price) in enumerate(zip(df.to_dict(orient="records"), predictions), start=1):
         price = row["Price"]
         deviation = (price - fair_price) / fair_price if fair_price else 0.0
@@ -158,6 +159,9 @@ def main() -> None:
     if args.jsonl:
         if args.output:
             output_path = Path(args.output)
+            output_dir = output_path.parent
+            if os.fspath(output_dir):
+                output_dir.mkdir(parents=True, exist_ok=True)
             with output_path.open("w", encoding="utf-8") as f:
                 for record in records:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -167,7 +171,11 @@ def main() -> None:
     else:
         frame = predictions_to_frame(records)
         if args.output:
-            frame.to_csv(args.output, index=False)
+            output_path = Path(args.output)
+            output_dir = output_path.parent
+            if os.fspath(output_dir):
+                output_dir.mkdir(parents=True, exist_ok=True)
+            frame.to_csv(output_path, index=False)
         else:
             print(frame.to_csv(index=False))
 
