@@ -15,11 +15,16 @@ from .data_utils import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
 
 
 FEATURE_WEIGHTS: Dict[str, float] = {
-    "surface_total": 3.0,
+    "Price": 4.0,
+    "Location": 2.5,
+    "Expensas": 2.0,
+    "surface_total": 4.0,
     "rooms": 2.0,
-    "garage": 1.0,
-    "Location": 2.0,
-    "type_building": 1.0,
+    "bedrooms": 2.0,
+    "garage": 3.0,
+    "type_building": 0.1,
+    "type_operation": 0.1,
+    
 }
 
 
@@ -60,22 +65,24 @@ class Winsorizer(BaseEstimator, TransformerMixin):
 class ColumnWeighter(BaseEstimator, TransformerMixin):
     """Multiplica columnas por pesos predefinidos."""
 
-    def __init__(self, weights: Dict[str, float], feature_names: Iterable[str] | None = None):
-        self.weights = dict(weights)
-        self.feature_names = list(feature_names) if feature_names is not None else None
+    def __init__(self, weights: Dict[str, float] | None = None, feature_names: list[str] | None = None):
+        self.weights = weights or {}
+        self.feature_names = feature_names or []
 
     def fit(self, X, y=None):
+        # Si X es un DataFrame, usar sus columnas
         if hasattr(X, "columns"):
             self.feature_names_in_ = list(X.columns)
-        elif self.feature_names is not None:
-            self.feature_names_in_ = list(self.feature_names)
         else:
-            raise ValueError("Feature names are required when input data has no column metadata.")
-
-        self.weights_ = np.array(
-            [float(self.weights.get(name, 1.0)) for name in self.feature_names_in_],
-            dtype=float,
-        )
+            # Si no, usar los feature_names proporcionados
+            self.feature_names_in_ = self.feature_names.copy() if self.feature_names else []
+        
+        # Crear array de pesos en el orden correcto de las features
+        self.weights_ = np.array([
+            float(self.weights.get(feature_name, 1.0)) 
+            for feature_name in self.feature_names_in_
+        ], dtype=float)
+        
         return self
 
     def transform(self, X):
@@ -85,23 +92,58 @@ class ColumnWeighter(BaseEstimator, TransformerMixin):
     def get_feature_names_out(self, input_features=None):
         if input_features is not None:
             return input_features
-        return getattr(self, "feature_names_in_", None)
-
+        return self.feature_names_in_
 
 class WeightedOneHotEncoder(OneHotEncoder):
     """OneHotEncoder que pondera las variables categóricas por columna original."""
 
-    def __init__(self, *args, weights: Dict[str, float] | None = None, **kwargs):
-        kwargs.setdefault("sparse_output", False)
-        super().__init__(*args, **kwargs)
-        self.weights = dict(weights or {})
+    def __init__(
+        self,
+        weights=None,
+        categories='auto',
+        drop=None,
+        sparse_output=False,
+        dtype=np.float64,
+        handle_unknown='error',
+        min_frequency=None,
+        max_categories=None,
+        feature_name_combiner='concat'
+    ):
+        super().__init__(
+            categories=categories,
+            drop=drop,
+            sparse_output=sparse_output,
+            dtype=dtype,
+            handle_unknown=handle_unknown,
+            min_frequency=min_frequency,
+            max_categories=max_categories,
+            feature_name_combiner=feature_name_combiner
+        )
+        self.weights = weights
+        self.original_feature_names_ = None
 
     def fit(self, X, y=None):
         fitted = super().fit(X, y)
+        
+        # Si no tenemos feature_names_in_, crear nombres basados en índices
+        if not hasattr(self, 'feature_names_in_'):
+            n_features = X.shape[1] if hasattr(X, 'shape') else len(X[0])
+            self.feature_names_in_ = [f'feature_{i}' for i in range(n_features)]
+        
+        # Convertir weights a dict si es necesario
+        weights_dict = {}
+        if self.weights is not None:
+            if hasattr(self.weights, 'items'):
+                weights_dict = dict(self.weights)
+            elif isinstance(self.weights, (list, tuple)):
+                # Si weights es una lista/tupla, asumir que coincide con feature_names_in_
+                weights_dict = {name: weight for name, weight in zip(self.feature_names_in_, self.weights)}
+        
         feature_weights = []
         for column, categories in zip(self.feature_names_in_, self.categories_):
-            weight = float(self.weights.get(column, 1.0))
+            weight = float(weights_dict.get(column, 1.0))
             feature_weights.append(np.full(len(categories), weight, dtype=float))
+        
         self.feature_weights_ = (
             np.concatenate(feature_weights) if feature_weights else np.array([], dtype=float)
         )
@@ -109,11 +151,14 @@ class WeightedOneHotEncoder(OneHotEncoder):
 
     def transform(self, X):
         transformed = super().transform(X)
-        if transformed.size == 0 or getattr(self, "feature_weights_", None) is None:
+        if (transformed.size == 0 or 
+            not hasattr(self, 'feature_weights_') or 
+            self.feature_weights_ is None):
             return transformed
         return transformed * self.feature_weights_
 
-
+    def get_feature_names_out(self, input_features=None):
+        return super().get_feature_names_out(input_features)
 def build_preprocessor(config: AppConfig) -> ColumnTransformer:
     numeric_features = NUMERIC_COLUMNS[1:]
     numeric_pipeline = Pipeline(
