@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 import joblib
 import numpy as np
@@ -13,8 +13,90 @@ from sklearn.model_selection import RandomizedSearchCV, cross_validate
 from sklearn.pipeline import Pipeline
 
 from .config import AppConfig, ensure_config_file, load_config
-from .data_utils import REQUIRED_COLUMNS, hash_dataframe, load_dataset, split_features_target
+from .data_utils import (
+    NUMERIC_COLUMNS,
+    REQUIRED_COLUMNS,
+    hash_dataframe,
+    load_dataset,
+    split_features_target,
+)
 from .pipeline import build_preprocessor, get_feature_names, get_pipeline_config
+
+
+def _extract_preprocessor_and_feature_params(preprocessor_spec: Any) -> tuple[Any, Dict[str, Any]]:
+    """Return the actual preprocessor object and any declared feature params."""
+
+    params: Dict[str, Any] = {}
+
+    if isinstance(preprocessor_spec, tuple) and preprocessor_spec:
+        preprocessor = preprocessor_spec[0]
+        for extra in preprocessor_spec[1:]:
+            if isinstance(extra, Mapping):
+                params.update(extra)
+        return preprocessor, params
+
+    preprocessor = preprocessor_spec
+
+    for attr in ("preprocessor", "transformer", "pipeline"):
+        if hasattr(preprocessor_spec, attr):
+            preprocessor = getattr(preprocessor_spec, attr)
+            break
+
+    for attr in ("feature_params", "feature_names_params", "params"):
+        candidate = getattr(preprocessor_spec, attr, None)
+        if isinstance(candidate, Mapping):
+            params.update(candidate)
+
+    return preprocessor, params
+
+
+def _normalize_feature_params(params: Mapping[str, Any], *, base_prefix: str = "") -> Dict[str, Any]:
+    """Flatten and prefix feature parameter keys for use with the pipeline."""
+
+    normalized: Dict[str, Any] = {}
+    for key, value in params.items():
+        composite_key = f"{base_prefix}{key}" if base_prefix else str(key)
+        if isinstance(value, Mapping):
+            normalized.update(
+                _normalize_feature_params(value, base_prefix=f"{composite_key}__")
+            )
+            continue
+
+        full_key = composite_key
+        if not str(full_key).startswith("preprocessor__"):
+            full_key = f"preprocessor__{full_key}"
+        normalized[str(full_key)] = value
+    return normalized
+
+
+def _merge_feature_params(*param_dicts: Mapping[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for param_dict in param_dicts:
+        if not param_dict:
+            continue
+        for key, value in param_dict.items():
+            merged[key] = value
+    return merged
+
+
+def _auto_configure_feature_names(pipeline: Pipeline, features: pd.DataFrame) -> None:
+    """Set feature name parameters when the pipeline exposes them and values are missing."""
+
+    available_params = pipeline.get_params(deep=True)
+    overrides: Dict[str, Any] = {}
+
+    numeric_key = "preprocessor__numeric__weight__feature_names"
+    if numeric_key in available_params:
+        current_value = available_params[numeric_key]
+        if not current_value:
+            numeric_features = [
+                col for col in features.columns if col in NUMERIC_COLUMNS and col != "Price"
+            ]
+            if numeric_features:
+                overrides[numeric_key] = numeric_features
+
+    if overrides:
+        pipeline.set_params(**overrides)
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,8 +114,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_pipeline(config: AppConfig) -> Pipeline:
-    preprocessor = build_preprocessor(config)
+def build_pipeline(
+    config: AppConfig,
+    *,
+    preprocessor: Any | None = None,
+    feature_params: Mapping[str, Any] | None = None,
+) -> Pipeline:
+    if preprocessor is None:
+        preprocessor_spec = build_preprocessor(config)
+        preprocessor, derived_params = _extract_preprocessor_and_feature_params(preprocessor_spec)
+        feature_params = _merge_feature_params(
+            _normalize_feature_params(derived_params),
+            feature_params or {},
+        )
+    else:
+        feature_params = dict(feature_params or {})
+
     model = RandomForestRegressor(
         n_estimators=config.model.n_estimators,
         max_depth=config.model.max_depth,
@@ -45,7 +141,15 @@ def build_pipeline(config: AppConfig) -> Pipeline:
         n_jobs=-1,
     )
 
-    return Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
+    pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
+
+    if feature_params:
+        available = pipeline.get_params(deep=True)
+        valid_params = {key: value for key, value in feature_params.items() if key in available}
+        if valid_params:
+            pipeline.set_params(**valid_params)
+
+    return pipeline
 
 
 def train() -> Dict[str, Any]:
@@ -65,7 +169,26 @@ def train() -> Dict[str, Any]:
     df = load_dataset(data_path)
     X, y = split_features_target(df)
 
-    pipeline = build_pipeline(config)
+    preprocessor_spec = build_preprocessor(config)
+    preprocessor, declared_feature_params = _extract_preprocessor_and_feature_params(
+        preprocessor_spec
+    )
+    feature_params = _normalize_feature_params(declared_feature_params)
+
+    numeric_param_key = "preprocessor__numeric__weight__feature_names"
+    if not feature_params.get(numeric_param_key):
+        numeric_features = [
+            col for col in X.columns if col in NUMERIC_COLUMNS and col != "Price"
+        ]
+        if numeric_features:
+            feature_params[numeric_param_key] = numeric_features
+
+    pipeline = build_pipeline(
+        config,
+        preprocessor=preprocessor,
+        feature_params=feature_params,
+    )
+    _auto_configure_feature_names(pipeline, X)
 
     if config.search.enabled:
         search = RandomizedSearchCV(
