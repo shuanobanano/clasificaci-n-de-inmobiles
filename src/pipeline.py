@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, Iterable, Tuple
-
+import pandas as pd
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
@@ -14,23 +14,39 @@ from .data_utils import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
 
 
 class Winsorizer(BaseEstimator, TransformerMixin):
-    """Clip values based on quantiles computed during fit."""
-
-    def __init__(self, lower_quantile: float = 0.01, upper_quantile: float = 0.99):
+    def __init__(self, lower_quantile=0.05, upper_quantile=0.05):
         self.lower_quantile = lower_quantile
         self.upper_quantile = upper_quantile
-        self.lower_: np.ndarray | None = None
-        self.upper_: np.ndarray | None = None
 
-    def fit(self, X, y=None):  # noqa: D401
-        X = self._validate_data(X, reset=True)
-        self.lower_ = np.quantile(X, self.lower_quantile, axis=0)
-        self.upper_ = np.quantile(X, self.upper_quantile, axis=0)
+    def fit(self, X, y=None):
+        # Validación básica de datos y conversión a DataFrame si es necesario
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        # Guardar nombres de columnas numéricas para usar en transform
+        self.columns_ = list(X.columns)
+        self.quantiles_ = {}
+        for col in self.columns_:
+            lower = X[col].quantile(self.lower_quantile)
+            upper = X[col].quantile(1 - self.upper_quantile)
+            self.quantiles_[col] = (lower, upper)
         return self
 
     def transform(self, X):
-        X = self._validate_data(X, reset=False)
-        return np.clip(X, self.lower_, self.upper_)
+        # Operar sobre una copia para no modificar el original
+        if not isinstance(X, pd.DataFrame):
+            X_df = pd.DataFrame(X, columns=self.columns_)
+        else:
+            X_df = X.copy()
+        # Aplicar recorte (winsorización) por columna
+        for col, (lower, upper) in self.quantiles_.items():
+            X_df[col] = X_df[col].clip(lower=lower, upper=upper)
+        # Devolver el mismo tipo que recibimos
+        return X_df if isinstance(X, pd.DataFrame) else X_df.to_numpy()
+
+    def get_feature_names_out(self, input_features=None):
+        return input_features
+
+
 
 
 def build_preprocessor(config: AppConfig) -> ColumnTransformer:
