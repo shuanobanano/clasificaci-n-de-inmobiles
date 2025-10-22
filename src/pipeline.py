@@ -196,15 +196,49 @@ def build_preprocessor(config: AppConfig) -> ColumnTransformer:
     return preprocessor
 
 
+def _ensure_iterable(features) -> list[str]:
+    if features is None:
+        return []
+    if isinstance(features, str):
+        return [features]
+    try:
+        return list(features)
+    except TypeError:
+        return [features]
+
+
+def _extract_feature_names(transformer, input_features) -> list[str]:
+    if isinstance(transformer, Pipeline):
+        current_features = _ensure_iterable(input_features)
+        for _, step in transformer.steps:
+            current_features = _extract_feature_names(step, current_features)
+        return _ensure_iterable(current_features)
+
+    if hasattr(transformer, "transformers_"):
+        names: list[str] = []
+        for name, sub_transformer, columns in transformer.transformers_:
+            if name == "remainder":
+                continue
+            names.extend(_extract_feature_names(sub_transformer, columns))
+        return names
+
+    if hasattr(transformer, "get_feature_names_out"):
+        try:
+            return _ensure_iterable(transformer.get_feature_names_out())
+        except TypeError:
+            input_names = getattr(transformer, "feature_names_in_", input_features)
+            return _ensure_iterable(transformer.get_feature_names_out(input_names))
+
+    input_names = getattr(transformer, "feature_names_in_", input_features)
+    return _ensure_iterable(input_names)
+
+
 def get_feature_names(preprocessor: ColumnTransformer) -> Iterable[str]:
     feature_names: list[str] = []
     for name, transformer, columns in preprocessor.transformers_:
         if name == "remainder":
             continue
-        if hasattr(transformer, "get_feature_names_out"):
-            feature_names.extend(transformer.get_feature_names_out(columns))
-        else:
-            feature_names.extend(columns)
+        feature_names.extend(_extract_feature_names(transformer, columns))
     return feature_names
 
 
