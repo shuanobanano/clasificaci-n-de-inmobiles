@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Dict, Iterable, Tuple
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -11,6 +12,15 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .config import AppConfig
 from .data_utils import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
+
+
+FEATURE_WEIGHTS: Dict[str, float] = {
+    "surface_total": 3.0,
+    "rooms": 2.0,
+    "garage": 1.0,
+    "Location": 2.0,
+    "type_building": 1.0,
+}
 
 
 class Winsorizer(BaseEstimator, TransformerMixin):
@@ -47,9 +57,65 @@ class Winsorizer(BaseEstimator, TransformerMixin):
         return input_features
 
 
+class ColumnWeighter(BaseEstimator, TransformerMixin):
+    """Multiplica columnas por pesos predefinidos."""
+
+    def __init__(self, weights: Dict[str, float], feature_names: Iterable[str] | None = None):
+        self.weights = dict(weights)
+        self.feature_names = list(feature_names) if feature_names is not None else None
+
+    def fit(self, X, y=None):
+        if hasattr(X, "columns"):
+            self.feature_names_in_ = list(X.columns)
+        elif self.feature_names is not None:
+            self.feature_names_in_ = list(self.feature_names)
+        else:
+            raise ValueError("Feature names are required when input data has no column metadata.")
+
+        self.weights_ = np.array(
+            [float(self.weights.get(name, 1.0)) for name in self.feature_names_in_],
+            dtype=float,
+        )
+        return self
+
+    def transform(self, X):
+        X_array = np.asarray(X, dtype=float)
+        return X_array * self.weights_
+
+    def get_feature_names_out(self, input_features=None):
+        if input_features is not None:
+            return input_features
+        return getattr(self, "feature_names_in_", None)
+
+
+class WeightedOneHotEncoder(OneHotEncoder):
+    """OneHotEncoder que pondera las variables categóricas por columna original."""
+
+    def __init__(self, *args, weights: Dict[str, float] | None = None, **kwargs):
+        kwargs.setdefault("sparse_output", False)
+        super().__init__(*args, **kwargs)
+        self.weights = dict(weights or {})
+
+    def fit(self, X, y=None):
+        fitted = super().fit(X, y)
+        feature_weights = []
+        for column, categories in zip(self.feature_names_in_, self.categories_):
+            weight = float(self.weights.get(column, 1.0))
+            feature_weights.append(np.full(len(categories), weight, dtype=float))
+        self.feature_weights_ = (
+            np.concatenate(feature_weights) if feature_weights else np.array([], dtype=float)
+        )
+        return fitted
+
+    def transform(self, X):
+        transformed = super().transform(X)
+        if transformed.size == 0 or getattr(self, "feature_weights_", None) is None:
+            return transformed
+        return transformed * self.feature_weights_
 
 
 def build_preprocessor(config: AppConfig) -> ColumnTransformer:
+    numeric_features = NUMERIC_COLUMNS[1:]
     numeric_pipeline = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
@@ -61,6 +127,7 @@ def build_preprocessor(config: AppConfig) -> ColumnTransformer:
                 ),
             ),
             ("scaler", StandardScaler()),
+            ("weight", ColumnWeighter(FEATURE_WEIGHTS, feature_names=numeric_features)),
         ]
     )
 
@@ -69,14 +136,14 @@ def build_preprocessor(config: AppConfig) -> ColumnTransformer:
             ("imputer", SimpleImputer(strategy="most_frequent")),
             (
                 "encoder",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                WeightedOneHotEncoder(handle_unknown="ignore", weights=FEATURE_WEIGHTS),
             ),
         ]
     )
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("numeric", numeric_pipeline, NUMERIC_COLUMNS[1:]),  # exclude target
+            ("numeric", numeric_pipeline, numeric_features),  # exclude target
             ("categorical", categorical_pipeline, CATEGORICAL_COLUMNS),
         ]
     )
@@ -109,7 +176,10 @@ def get_pipeline_config(config: AppConfig) -> Dict[str, Tuple[str, object]]:
 
 
 __all__ = [
+    "FEATURE_WEIGHTS",
     "Winsorizer",
+    "ColumnWeighter",
+    "WeightedOneHotEncoder",
     "build_preprocessor",
     "get_feature_names",
     "get_pipeline_config",
