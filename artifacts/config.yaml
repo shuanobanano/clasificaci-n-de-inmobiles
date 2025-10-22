@@ -1,0 +1,18 @@
+random_state: 42
+band_pct: 0.10
+cv_folds: 5
+winsor:
+  low: 0.01
+  high: 0.99
+model:
+  n_estimators: 600
+  max_depth: null
+  min_samples_split: 2
+  min_samples_leaf: 1
+  max_features: "sqrt"
+  bootstrap: true
+search:
+  enabled: true
+  n_iter: 40
+  scoring: "neg_mean_absolute_error"
+  n_jobs: -1
