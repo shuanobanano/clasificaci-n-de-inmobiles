@@ -30,12 +30,12 @@ El flujo por defecto es **Regresión (precio justo) + Regla (±banda)**. Se incl
 Tipos sugeridos:
 
 * `Price` (**float**, moneda unificada)
-* `Location` (**string**)
+* `Location` (**string**, **barrio de la propiedad**). *Este dataset viene limpio con barrios de Buenos Aires (ej.: "Belgrano, Capital Federal"; "Palermo Hollywood, Palermo").*
 * `Expensas` (**float**)
 * `surface_total` (**float**)
 * `rooms` (**int**)
 * `bedrooms` (**int**)
-* `garage` (**int**, 0/1 permitido)
+* `garage` (**int**)
 * `type_building` (**categorical**: p.ej., *Departamento*, *Casa*, *PH*, ...)
 * `type_operation` (**categorical**: *Venta*, *Alquiler*)
 
@@ -50,14 +50,14 @@ Cada fila de predicción se emite como un objeto con las claves `id`, `input`, `
   "id": "uuid",
   "input": {
     "Price": 120000.0,
-    "Location": "Córdoba/Alta Gracia",
+    "Location": "Belgrano, Capital Federal",
     "Expensas": 80000.0,
     "surface_total": 56.0,
     "rooms": 2,
     "bedrooms": 1,
     "garage": 0,
-    "type_building": "Departamento",
-    "type_operation": "Venta"
+    "type_building": "departamentos",
+    "type_operation": "alquiler"
   },
   "pred": {
     "pred_fair_price": 108000.0,
@@ -427,14 +427,15 @@ search:
 
 ```csv
 Price,Location,Expensas,surface_total,rooms,bedrooms,garage,type_building,type_operation
-120000,Córdoba/Alta Gracia,80000,56,2,1,0,Departamento,Venta
-95000,Córdoba/Cerro,60000,42,2,1,1,PH,Venta
+650000.0,"Belgrano, Capital Federal",235000.0,58,1,0,0,departamentos,alquiler
+1235000.0,"Palermo Hollywood, Palermo",230000.0,55,2,1,1,departamentos,alquiler
 ```
 
 ### Línea JSONL de salida (una por propiedad)
 
 ```json
-{"id":"a3f...","input":{"Price":120000.0,"Location":"Córdoba/Alta Gracia","Expensas":80000.0,"surface_total":56.0,"rooms":2,"bedrooms":1,"garage":0,"type_building":"Departamento","type_operation":"Venta"},"pred":{"pred_fair_price":108000.0,"deviation_pct":0.1111,"class_label":"Sobrevalorada","confidence":0.1111,"band_pct":0.1,"currency":"ARS","locale":"es-AR"},"ui":{"badge":{"text":"Sobrevalorada","variant":"danger"},"color":"#ef4444","icon":"trending-up","summary":"Precio publicado $120.000 vs justo $108.000 (+11,1%)"},"inference_timestamp":"2025-10-22T03:10:00Z"}
+{"id":"a3f...","input":{"Price":650000.0,"Location":"Belgrano, Capital Federal","Expensas":235000.0,"surface_total":58.0,"rooms":1,"bedrooms":0,"garage":0,"type_building":"departamentos","type_operation":"alquiler"},"pred":{"pred_fair_price":585000.0,"deviation_pct":0.1111,"class_label":"Sobrevalorada","confidence":0.1111,"band_pct":0.1,"currency":"ARS","locale":"es-AR"},"ui":{"badge":{"text":"Sobrevalorada","variant":"danger"},"color":"#ef4444","icon":"trending-up","summary":"Precio publicado $650.000 vs justo $585.000 (+11,1%)"},"inference_timestamp":"2025-10-22T03:10:00Z"}
+
 ```
 
 ---
